@@ -38,8 +38,9 @@ def _fetch_and_calc(fetcher: DataFetcher, pair_symbols: list[str]) -> Optional[d
     )
 
     if not btc_ohlcv or not eth_ohlcv:
-        logger.warning("OHLCV取得失敗。")
-        return None
+        detail = f"btc={len(btc_ohlcv or [])}, eth={len(eth_ohlcv or [])}"
+        logger.warning("OHLCV取得失敗。%s", detail)
+        return {"_fetch_failed": True, "reason": "ohlcv_empty", "detail": detail}
 
     btc_df = (
         pd.DataFrame(btc_ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
@@ -60,8 +61,9 @@ def _fetch_and_calc(fetcher: DataFetcher, pair_symbols: list[str]) -> Optional[d
     merged = merged.sort_values("timestamp").tail(ROLLING_WINDOW + 1).reset_index(drop=True)
 
     if len(merged) < ROLLING_WINDOW + 1:
+        detail = f"merged={len(merged)}, need={ROLLING_WINDOW + 1}"
         logger.warning("データ不足（%d件）。", len(merged))
-        return None
+        return {"_fetch_failed": True, "reason": "data_insufficient", "detail": detail}
 
     ratio, _, _, z_score = calc_z_score(
         merged["eth_close"], merged["btc_close"], window=ROLLING_WINDOW
@@ -111,8 +113,8 @@ def run_once(
 
     # 2. OHLCV 取得 → Z-Score 計算
     data = _fetch_and_calc(fetcher, config.pair_symbols)
-    if data is None:
-        return None
+    if data is None or data.get("_fetch_failed"):
+        return data
 
     z = data["z_score"]
     r = data["ratio"]

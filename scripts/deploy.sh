@@ -34,7 +34,7 @@ echo "=== 2. ECR ログイン ==="
 aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
 
 echo "=== 3. イメージをビルド・タグ付け・プッシュ ==="
-docker build --platform linux/amd64 --provenance=false --sbom=false -t cryptotrader-lambda:latest . || true
+docker build --no-cache --platform linux/amd64 --provenance=false --sbom=false -t cryptotrader-lambda:latest .
 docker tag cryptotrader-lambda:latest "$ECR_URI"
 docker push "$ECR_URI"
 
@@ -76,6 +76,15 @@ sam deploy \
   --resolve-image-repos \
   --no-confirm-changeset \
   --no-fail-on-empty-changeset
+
+echo "=== 6. Lambda イメージ強制更新 ==="
+# CloudFormation は ImageUri が同じだと更新を検知しないため、明示的に update-function-code で最新イメージを反映
+FUNC_NAME="${STACK_NAME}-CryptoTrader"
+aws lambda update-function-code \
+  --function-name "$FUNC_NAME" \
+  --image-uri "$ECR_URI" \
+  --region "$REGION" \
+  --output text --query 'LastModified' 2>/dev/null && echo "Lambda イメージを更新しました" || echo "Lambda 更新スキップ（初回デプロイ時は無視可）"
 
 echo ""
 echo "=== デプロイ完了 ==="

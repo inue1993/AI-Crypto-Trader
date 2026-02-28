@@ -188,6 +188,48 @@ def cmd_trades(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_cloudwatch(args: argparse.Namespace) -> int:
+    """Lambda の CloudWatch Logs を表示（デバッグ用）。"""
+    func_name = get_function_name()
+    region = os.getenv("AWS_REGION", "ap-northeast-1")
+    log_group = f"/aws/lambda/{func_name}"
+    client = boto3.client("logs", region_name=region)
+
+    try:
+        streams = client.describe_log_streams(
+            logGroupName=log_group,
+            orderBy="LastEventTime",
+            descending=True,
+            limit=3,
+        )
+        streams = streams.get("logStreams", [])
+        if not streams:
+            print(f"ログストリームがありません: {log_group}")
+            return 0
+
+        start = int((__import__("time").time() - args.minutes * 60) * 1000)
+        events: list[dict] = []
+        for s in streams:
+            resp = client.get_log_events(
+                logGroupName=log_group,
+                logStreamName=s["logStreamName"],
+                startTime=start,
+            )
+            events.extend(resp.get("events", []))
+
+        events.sort(key=lambda e: e["timestamp"])
+        for e in events:
+            ts = __import__("datetime").datetime.fromtimestamp(e["timestamp"] / 1000)
+            print(f"{ts.strftime('%H:%M:%S')} {e['message']}")
+    except Exception as e:
+        if "ResourceNotFoundException" in str(type(e).__name__) or "log group" in str(e).lower():
+            print(f"ロググループが見つかりません: {log_group}")
+        else:
+            print(f"ログ取得失敗: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_invoke(args: argparse.Namespace) -> int:
     """Lambda を手動で即時実行。"""
     func_name = get_function_name()
@@ -261,6 +303,11 @@ def main() -> int:
     # invoke
     p_invoke = subparsers.add_parser("invoke", help="Lambda を手動で即時実行")
     p_invoke.set_defaults(func=cmd_invoke)
+
+    # cloudwatch
+    p_cw = subparsers.add_parser("cloudwatch", help="Lambda の CloudWatch Logs を表示（デバッグ用）")
+    p_cw.add_argument("--minutes", type=int, default=15, help="直近 N 分のログ（デフォルト: 15）")
+    p_cw.set_defaults(func=cmd_cloudwatch)
 
     # stop
     p_stop = subparsers.add_parser("stop", help="ポジション状態をリセット（緊急停止）")

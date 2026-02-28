@@ -38,9 +38,14 @@ def handler(event: dict, context: object) -> dict:
             "body": json.dumps({"error": str(e)}, default=str),
         }
 
-    if result is None:
-        logger.warning("データ取得失敗のためスキップ")
-        return {"statusCode": 200, "body": json.dumps({"skipped": True, "reason": "data_fetch_failed"})}
+    if result is None or result.get("_fetch_failed"):
+        detail = result.get("detail", "") if result else ""
+        reason = result.get("reason", "data_fetch_failed") if result else "data_fetch_failed"
+        logger.warning("データ取得失敗のためスキップ: %s %s", reason, detail)
+        return {
+            "statusCode": 200,
+            "body": json.dumps({"skipped": True, "reason": reason, "detail": detail}),
+        }
 
     # モニタリング結果を保存
     storage.save_monitor_log(result)
