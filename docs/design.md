@@ -64,9 +64,11 @@ AI-Crypto-Trader/
 - **Backtester**: バックテスト
   - `load_data()`: API または CSV から OHLCV + FR 履歴取得
   - `run()`: 時系列シミュレーション
+  - `_calc_equity_delta_neutral()`: デルタニュートラル用エクイティ計算（現物・先物の含み損益を相殺し、locked_notional で一定）
   - `calculate_metrics()`: 勝率、最大DD、累積FR、総コスト
   - `plot_equity_curve()`: matplotlib でエクイティカーブ
   - `export_summary()`: CSV 出力
+  - 各タイムステップでログ出力: 価格、現物/先物の数量・USD価値・未実現損益、累積FR
 
 ### 2.6 main.py
 

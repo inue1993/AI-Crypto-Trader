@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,6 +15,8 @@ import pandas as pd
 from config import Config
 from fetcher import DataFetcher
 from screener import Screener
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -179,13 +182,15 @@ class Backtester:
                     continue
 
                 cost = amount * price * 2 * (taker_fee + slippage)
-                if cost > balance:
+                notional = amount * price
+                if cost + notional > balance:
                     continue
 
-                balance -= cost
+                balance -= cost + notional
                 total_costs += cost
                 positions[symbol] = {
-                    "amount": amount,
+                    "amount_spot": amount,
+                    "amount_perp": amount,
                     "entry_price": price,
                     "entry_ts": ts,
                     "last_funding_ts": ts,
@@ -196,7 +201,14 @@ class Backtester:
                 fr = self._get_fr_at_ts(symbol, ts, fr_history)
                 elapsed = ts - pos["last_funding_ts"]
                 if elapsed >= funding_interval_ms:
-                    notional = pos["amount"] * pos["entry_price"]
+                    notional_spot = pos["amount_spot"] * pos["entry_price"]
+                    notional_perp = pos["amount_perp"] * pos["entry_price"]
+                    if abs(notional_spot - notional_perp) > 0.01:
+                        logger.warning(
+                            "Notional mismatch %s: spot=%.2f perp=%.2f",
+                            symbol, notional_spot, notional_perp,
+                        )
+                    notional = (notional_spot + notional_perp) / 2
                     funding = notional * fr
                     balance += funding
                     total_funding += funding
@@ -204,26 +216,57 @@ class Backtester:
 
                 if fr < min_fr:
                     exit_price = self._get_price_at_ts(symbol, ts, ohlcv_df)
-                    exit_cost = pos["amount"] * exit_price * 2 * (taker_fee + slippage)
+                    exit_cost = pos["amount_spot"] * exit_price * 2 * (taker_fee + slippage)
+                    balance += pos["amount_spot"] * pos["entry_price"]
                     balance -= exit_cost
                     total_costs += exit_cost
-                    pnl = pos["amount"] * (exit_price - pos["entry_price"]) * 2
-                    if pnl > 0:
-                        winning += 1
+                    spot_pnl = pos["amount_spot"] * (exit_price - pos["entry_price"])
+                    perp_pnl = pos["amount_perp"] * (pos["entry_price"] - exit_price)
+                    net_pnl = spot_pnl + perp_pnl
+                    if abs(net_pnl) > 0.01:
+                        logger.warning(
+                            "Delta leak on exit %s: spot_pnl=%.2f perp_pnl=%.2f net=%.2f",
+                            symbol, spot_pnl, perp_pnl, net_pnl,
+                        )
                     total_trades += 1
                     del positions[symbol]
 
-            equity = balance + sum(
-                p["amount"] * self._get_price_at_ts(s, ts, ohlcv_df)
-                for s, p in positions.items()
-            )
+            current_price_map = {
+                s: self._get_price_at_ts(s, ts, ohlcv_df)
+                for s in positions
+            }
+            equity = self._calc_equity_delta_neutral(balance, positions)
+            if positions and (len(equity_curve) % 24 == 0 or len(equity_curve) < 3):
+                for sym in positions:
+                    p = positions[sym]
+                    cp = current_price_map.get(sym, p["entry_price"])
+                    spot_usd = p["amount_spot"] * cp
+                    perp_usd = p["amount_perp"] * cp
+                    spot_upl = p["amount_spot"] * (cp - p["entry_price"])
+                    perp_upl = p["amount_perp"] * (p["entry_price"] - cp)
+                    logger.info(
+                        "[BT] ts=%s %s price=%.2f | spot qty=%.6f usd=%.2f upl=%.2f | perp qty=%.6f usd=%.2f upl=%.2f | cum_fr=%.2f equity=%.2f",
+                        pd.Timestamp(ts, unit="ms").strftime("%Y-%m-%d %H:%M"),
+                        sym,
+                        cp,
+                        p["amount_spot"],
+                        spot_usd,
+                        spot_upl,
+                        p["amount_perp"],
+                        perp_usd,
+                        perp_upl,
+                        total_funding,
+                        equity,
+                    )
             equity_curve.append(equity)
             timestamps.append(ts)
 
         for symbol, pos in list(positions.items()):
             ts = timestamps_sorted[-1] if timestamps_sorted else 0
             exit_price = self._get_price_at_ts(symbol, ts, ohlcv_df)
-            exit_cost = pos["amount"] * exit_price * 2 * (taker_fee + slippage)
+            exit_cost = pos["amount_spot"] * exit_price * 2 * (taker_fee + slippage)
+            balance += pos["amount_spot"] * pos["entry_price"]
+            balance -= exit_cost
             total_costs += exit_cost
             total_trades += 1
 
@@ -295,6 +338,21 @@ class Backtester:
         if sub.empty:
             return 0.0
         return float(sub.iloc[-1]["close"])
+
+    def _calc_equity_delta_neutral(
+        self,
+        balance: float,
+        positions: dict[str, dict[str, Any]],
+    ) -> float:
+        """デルタニュートラルポジションを考慮したエクイティを計算する。
+
+        現物ロングと先物ショートの含み損益は相殺されるため、ポジション価値は
+        エントリー時の Notional（amount * entry_price）で一定。
+        """
+        locked_notional = sum(
+            p["amount_spot"] * p["entry_price"] for p in positions.values()
+        )
+        return balance + locked_notional
 
     def calculate_metrics(self) -> dict[str, Any]:
         """勝率、最大DD、累積FR収益、総コスト等を計算する。"""

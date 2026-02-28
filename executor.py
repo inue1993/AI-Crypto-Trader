@@ -185,11 +185,11 @@ class Executor:
             timestamp=time.time(),
             fee=fee,
         )
+        notional_spot = amount * price_spot
+        notional_perp = amount * price_perp
         logger.info(
-            "【DRY RUN】%s: 現物仮想買い @%.2f, 先物仮想売り @%.2f",
-            symbol,
-            price_spot,
-            price_perp,
+            "【DRY RUN】%s: 現物 qty=%.6f @%.2f notional=%.2f | 先物 qty=%.6f @%.2f notional=%.2f",
+            symbol, amount, price_spot, notional_spot, amount, price_perp, notional_perp,
         )
         return True
 
@@ -229,11 +229,11 @@ class Executor:
             timestamp=time.time(),
             fee=fee,
         )
+        notional_spot = amount * price_spot
+        notional_perp = amount * price_perp
         logger.info(
-            "【LIVE】%s: 現物買い @%.2f, 先物売り @%.2f",
-            symbol,
-            price_spot,
-            price_perp,
+            "【LIVE】%s: 現物 qty=%.6f @%.2f notional=%.2f | 先物 qty=%.6f @%.2f notional=%.2f",
+            symbol, amount, price_spot, notional_spot, amount, price_perp, notional_perp,
         )
         return True
 
