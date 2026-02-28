@@ -24,18 +24,33 @@ ROLLING_WINDOW = 200
 
 def _fetch_and_calc(fetcher: DataFetcher, pair_symbols: list[str]) -> Optional[dict[str, Any]]:
     """OHLCV を取得し Z-Score を計算する。失敗時は None。"""
-    since = int(time.time() * 1000) - (ROLLING_WINDOW + 50) * 3600 * 1000
+    end_ms = int(time.time() * 1000)
+    since_ms = end_ms - (ROLLING_WINDOW + 50) * 3600 * 1000
     btc_sym = pair_symbols[0]  # BTC/USDT or BTC/JPY
     eth_sym = pair_symbols[1]  # ETH/USDT or ETH/JPY
-    btc_ohlcv = fetcher.fetch_ohlcv(btc_sym, "1h", since=since, limit=250)
-    eth_ohlcv = fetcher.fetch_ohlcv(eth_sym, "1h", since=since, limit=250)
+
+    btc_ohlcv = fetcher.fetch_ohlcv_range(
+        btc_sym, since_ms, end_ms, "1h", min_candles=ROLLING_WINDOW + 50
+    )
+    time.sleep(0.2)
+    eth_ohlcv = fetcher.fetch_ohlcv_range(
+        eth_sym, since_ms, end_ms, "1h", min_candles=ROLLING_WINDOW + 50
+    )
 
     if not btc_ohlcv or not eth_ohlcv:
         logger.warning("OHLCV取得失敗。")
         return None
 
-    btc_df = pd.DataFrame(btc_ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
-    eth_df = pd.DataFrame(eth_ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    btc_df = (
+        pd.DataFrame(btc_ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        .drop_duplicates(subset=["timestamp"])
+        .sort_values("timestamp")
+    )
+    eth_df = (
+        pd.DataFrame(eth_ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        .drop_duplicates(subset=["timestamp"])
+        .sort_values("timestamp")
+    )
     merged = pd.merge(
         btc_df[["timestamp", "close"]].rename(columns={"close": "btc_close"}),
         eth_df[["timestamp", "close"]].rename(columns={"close": "eth_close"}),

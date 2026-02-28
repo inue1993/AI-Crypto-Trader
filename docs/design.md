@@ -47,7 +47,8 @@ AI-Crypto-Trader/
 - **fetch_crypto_news(limit=10)**: ETH/BTC関連ニュースを取得
   - CryptoPanic API（CRYPTOPANIC_API_KEY 設定時）
   - RSS フォールバック（CoinDesk, CoinTelegraph、BTC/ETH キーワードでフィルタ）
-  - `fetch_ohlcv()`: 1時間足OHLCV取得（ペアトレード用）
+  - `fetch_ohlcv()`: 1時間足OHLCV取得（単発）
+  - `fetch_ohlcv_range()`: 指定期間のOHLCVを取得。bitbank は Candlestick API が YYYYMMDD 指定で1日分しか返さないため日単位でループ。Bybit/Binance はカーソルベースでループ
   - 既存の `get_tradable_symbols`, `get_funding_rates` 等は LIVE/DRY_RUN 用に残す
 
 ### 2.3 screener.py（ペアトレード版）
@@ -78,7 +79,7 @@ AI-Crypto-Trader/
   - `equity_curve`, `timestamps`, `z_scores`
   - `total_trades`, `winning_trades`, `total_costs`, `max_drawdown`
 - **Backtester**:
-  - `load_data()`: BTC/USDT, ETH/USDT の1時間足OHLCVを取得（APIまたはCSV）
+  - `load_data()`: BTC/USDT, ETH/USDT（または BTC/JPY, ETH/JPY）の1時間足OHLCVを取得。`fetch_ohlcv_range` を使用（bitbank は日単位ループで250件以上取得）
   - `run()`: 時系列シミュレーション
     - 各タイムスタンプで Ratio, Z-Score を計算
     - エントリー: Z-Score < -2.0 または > 2.0 かつ AI が ENTRY

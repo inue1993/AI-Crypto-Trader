@@ -92,17 +92,13 @@ class Backtester:
         merged: Optional[pd.DataFrame] = None
 
         for symbol in symbols:
-            since = start_ts
-            symbol_ohlcv: list[list] = []
-            while since < end_ts:
-                candles = self.fetcher.fetch_ohlcv(
-                    symbol, "1h", since=since, limit=200
-                )
-                if not candles:
-                    break
-                symbol_ohlcv.extend(candles)
-                since = candles[-1][0] + 1
-                time.sleep(0.2)
+            symbol_ohlcv = self.fetcher.fetch_ohlcv_range(
+                symbol,
+                start_ts,
+                end_ts,
+                "1h",
+                min_candles=ROLLING_WINDOW + 50,
+            )
 
             if not symbol_ohlcv:
                 continue

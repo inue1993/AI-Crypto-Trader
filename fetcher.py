@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import urllib.request
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import ccxt
@@ -165,6 +167,88 @@ class DataFetcher:
         """過去のOHLCVデータを取得する。"""
         self._ensure_markets_loaded()
         return self.exchange.fetch_ohlcv(symbol, timeframe, since, limit)
+
+    def fetch_ohlcv_range(
+        self,
+        symbol: str,
+        since_ms: int,
+        end_ms: int,
+        timeframe: str = "1h",
+        min_candles: int = 200,
+    ) -> list[list]:
+        """指定期間のOHLCVを取得する。
+
+        bitbank は Candlestick API が YYYYMMDD 指定で1日分しか返さないため、
+        日単位でループして複数日分を取得する。Bybit/Binance はカーソルベースでループ。
+        """
+        self._ensure_markets_loaded()
+        if self.config.is_bitbank:
+            return self._fetch_ohlcv_range_bitbank(
+                symbol, since_ms, end_ms, timeframe, min_candles
+            )
+        return self._fetch_ohlcv_range_generic(
+            symbol, since_ms, end_ms, timeframe, min_candles
+        )
+
+    def _fetch_ohlcv_range_bitbank(
+        self,
+        symbol: str,
+        since_ms: int,
+        end_ms: int,
+        timeframe: str,
+        min_candles: int,
+    ) -> list[list]:
+        """bitbank: 日単位でAPIを呼び、指定期間のOHLCVを取得。"""
+        one_day_ms = 24 * 3600 * 1000
+
+        def _start_of_day_utc(ms: int) -> int:
+            dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+            start = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            return int(start.timestamp() * 1000)
+
+        result: list[list] = []
+        current = _start_of_day_utc(since_ms)
+        seen_ts: set[int] = set()
+
+        while current < end_ms and len(result) < min_candles:
+            candles = self.fetch_ohlcv(symbol, timeframe, since=current, limit=100)
+            if not candles:
+                current += one_day_ms
+                time.sleep(0.2)
+                continue
+            for c in candles:
+                ts = int(c[0])
+                if ts < since_ms or ts > end_ms:
+                    continue
+                if ts not in seen_ts:
+                    seen_ts.add(ts)
+                    result.append(c)
+            current += one_day_ms
+            time.sleep(0.2)
+
+        return sorted(result, key=lambda x: x[0])
+
+    def _fetch_ohlcv_range_generic(
+        self,
+        symbol: str,
+        since_ms: int,
+        end_ms: int,
+        timeframe: str,
+        min_candles: int,
+    ) -> list[list]:
+        """Bybit/Binance 等: カーソルベースでループ取得。"""
+        result: list[list] = []
+        since = since_ms
+        while since < end_ms and len(result) < min_candles:
+            candles = self.fetch_ohlcv(symbol, timeframe, since=since, limit=200)
+            if not candles:
+                break
+            for c in candles:
+                if since_ms <= c[0] <= end_ms:
+                    result.append(c)
+            since = candles[-1][0] + 1
+            time.sleep(0.2)
+        return sorted(result, key=lambda x: x[0])
 
     def fetch_funding_rate_history(
         self,

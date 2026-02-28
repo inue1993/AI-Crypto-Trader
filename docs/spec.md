@@ -17,7 +17,7 @@
 
 ### 3.1 対象銘柄
 - **Bybit/Binance:** BTC/USDT と ETH/USDT
-- **bitbank:** BTC/JPY と ETH/JPY（日本円建て、現物＋信用取引）
+- **bitbank:** BTC/JPY と ETH/JPY（日本円建て、現物＋信用取引）。Candlestick API は YYYYMMDD 指定で1日分のみ返すため、日単位でループして250件以上取得
 
 ### 3.2 Z-Score 計算
 - 過去データ（1時間足OHLCVの過去200期間）から、2銘柄の終値の **比率（Ratio = ETH価格 / BTC価格）** を計算
