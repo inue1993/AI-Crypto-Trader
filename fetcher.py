@@ -46,8 +46,10 @@ class DataFetcher:
             self.exchange.load_markets()
             self._markets_loaded = True
 
-    def _get_perpetual_exchange(self) -> ccxt.Exchange:
-        """先物用の exchange インスタンスを取得する。"""
+    def _get_perpetual_exchange(self) -> Optional[ccxt.Exchange]:
+        """先物用の exchange インスタンスを取得する。bitbank は先物非対応のため None。"""
+        if self.config.is_bitbank:
+            return None
         if self._perpetual_exchange is None:
             exchange_class = getattr(ccxt, self.config.exchange, ccxt.bybit)
             self._perpetual_exchange = exchange_class(
@@ -62,9 +64,14 @@ class DataFetcher:
         return self._perpetual_exchange
 
     def get_tradable_symbols(self) -> list[str]:
-        """現物と無期限先物の両方で上場している銘柄リストを返す。"""
+        """現物と無期限先物の両方で上場している銘柄リストを返す。bitbank は現物+信用取引のみ。"""
         self._ensure_markets_loaded()
+        if self.config.is_bitbank:
+            return list(self.config.pair_symbols)
+
         perp = self._get_perpetual_exchange()
+        if perp is None:
+            return list(self.config.pair_symbols)
 
         spot_symbols: set[str] = set()
         for m in self.exchange.markets.values():
@@ -82,10 +89,13 @@ class DataFetcher:
         return common
 
     def get_funding_rates(self, symbols: list[str]) -> dict[str, float]:
-        """各銘柄の現在のファンディングレートを取得する。"""
+        """各銘柄の現在のファンディングレートを取得する。bitbank は先物なしのため空。"""
+        if self.config.is_bitbank:
+            return {s: 0.0 for s in symbols}
         perp = self._get_perpetual_exchange()
+        if perp is None:
+            return {s: 0.0 for s in symbols}
         result: dict[str, float] = {}
-
         for symbol in symbols:
             try:
                 perp_symbol = self._to_perpetual_symbol(symbol)
@@ -95,12 +105,13 @@ class DataFetcher:
                 result[symbol] = float(fr.get("fundingRate", 0))
             except Exception:
                 continue
-
         return result
 
     def _to_perpetual_symbol(self, symbol: str) -> Optional[str]:
         """現物シンボルを先物シンボルに変換する。Bybit/Binance は BASE/QUOTE:QUOTE 形式を要求。"""
         perp = self._get_perpetual_exchange()
+        if perp is None:
+            return None
         if "/" in symbol and ":" not in symbol:
             base, quote = symbol.split("/", 1)
             candidate = f"{base}/{quote}:{quote}"
@@ -161,8 +172,12 @@ class DataFetcher:
         since: Optional[int] = None,
         limit: Optional[int] = 200,
     ) -> list[dict[str, Any]]:
-        """過去のファンディングレート履歴を取得する。"""
+        """過去のファンディングレート履歴を取得する。bitbank は先物なしのため空。"""
+        if self.config.is_bitbank:
+            return []
         perp = self._get_perpetual_exchange()
+        if perp is None:
+            return []
         perp_symbol = self._to_perpetual_symbol(symbol)
         if perp_symbol is None:
             return []
@@ -184,8 +199,12 @@ class DataFetcher:
         since: Optional[int] = None,
         limit: Optional[int] = 30,
     ) -> list[dict[str, Any]]:
-        """過去のOpen Interest（未決済建玉）履歴を取得する。"""
+        """過去のOpen Interest（未決済建玉）履歴を取得する。bitbank は先物なしのため空。"""
+        if self.config.is_bitbank:
+            return []
         perp = self._get_perpetual_exchange()
+        if perp is None:
+            return []
         perp_symbol = self._to_perpetual_symbol(symbol)
         if perp_symbol is None:
             return []
@@ -201,10 +220,14 @@ class DataFetcher:
         return []
 
     def get_oi_change_pct_24h(self, symbol: str) -> Optional[float]:
-        """過去24時間のOI変化率（%）を取得する。取得失敗時はNone。"""
+        """過去24時間のOI変化率（%）を取得する。取得失敗時はNone。bitbank は None。"""
         import time as _time
 
+        if self.config.is_bitbank:
+            return None
         perp = self._get_perpetual_exchange()
+        if perp is None:
+            return None
         perp_symbol = self._to_perpetual_symbol(symbol)
         if perp_symbol is None:
             return None
@@ -232,7 +255,11 @@ class DataFetcher:
 
     def get_oi_volume_ratio_pct(self, symbol: str) -> Optional[float]:
         """OI履歴が取れない場合のフォールバック: 現在OI（USD）と24h出来高の比率（%）を返す。"""
+        if self.config.is_bitbank:
+            return None
         perp = self._get_perpetual_exchange()
+        if perp is None:
+            return None
         perp_symbol = self._to_perpetual_symbol(symbol)
         if perp_symbol is None:
             return None

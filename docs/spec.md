@@ -11,12 +11,13 @@
   - `pandas`, `numpy` (データ処理・計算)
   - `python-dotenv` (環境変数管理)
   - `matplotlib` (バックテスト結果のグラフ描画)
-- **対象取引所:** Binance または Bybit
+- **対象取引所:** Binance、Bybit、bitbank（日本国内・金融庁登録済み）
 
 ## 3. 戦略のコアロジック（Z-Scoreベースの平均回帰）
 
 ### 3.1 対象銘柄
-- 固定ペア: **BTC/USDT** と **ETH/USDT**
+- **Bybit/Binance:** BTC/USDT と ETH/USDT
+- **bitbank:** BTC/JPY と ETH/JPY（日本円建て、現物＋信用取引）
 
 ### 3.2 Z-Score 計算
 - 過去データ（1時間足OHLCVの過去200期間）から、2銘柄の終値の **比率（Ratio = ETH価格 / BTC価格）** を計算
@@ -62,7 +63,8 @@ Z-Score の異常値検知時、即座に発注せず AI フィルターを通�
 - **Lambda**: Docker イメージベース。1時間ごとに EventBridge で起動
 - **DynamoDB**: ポジション状態・モニタリングログ・トレード履歴を Single Table Design で保存。TTL 90日
 - **Slack**: シグナル検出・エントリー/エグジット時に Webhook 通知
-- **SAM**: `template.yaml` + `Dockerfile` でデプロイ。`sam build && sam deploy --guided`
+- **SAM**: `template.yaml` + `Dockerfile` でデプロイ。`./scripts/deploy.sh` または `sam build && sam deploy --guided`
+- **bitbank デプロイ**: `./scripts/deploy.sh bitbank`
 
 ## 9. 運用手順（デプロイ後）
 

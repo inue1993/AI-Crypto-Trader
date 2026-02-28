@@ -24,7 +24,7 @@ from screener import (
 
 logger = logging.getLogger(__name__)
 
-# ペアトレード固定銘柄
+# デフォルト銘柄（config.pair_symbols で上書き）
 PAIR_SYMBOLS = ["BTC/USDT", "ETH/USDT"]
 
 # 取引コスト: 0.15% per side（エントリー・エグジットそれぞれ）
@@ -75,7 +75,7 @@ class Backtester:
         期間指定: start/end で指定。ROLLING_WINDOW(200)分のウォームアップ用に、
         取得開始日は start の約10日前からとする。
         """
-        symbols = symbols or PAIR_SYMBOLS
+        symbols = symbols or self.config.pair_symbols
         start = start or self.config.backtest_start or "2024-01-01"
         end = end or self.config.backtest_end or "2024-03-31"
 
@@ -153,10 +153,17 @@ class Backtester:
         merged = merged.sort_values("timestamp").dropna().reset_index(drop=True)
         return merged
 
+    def _get_eth_btc_columns(self, merged_df: pd.DataFrame) -> tuple[str, str]:
+        """マージ済みDataFrameからETH/BTCの終値カラム名を取得する。"""
+        eth_cols = [c for c in merged_df.columns if c.startswith("close_ETH")]
+        btc_cols = [c for c in merged_df.columns if c.startswith("close_BTC")]
+        eth_col = eth_cols[0] if eth_cols else "close_ETH_USDT"
+        btc_col = btc_cols[0] if btc_cols else "close_BTC_USDT"
+        return eth_col, btc_col
+
     def run(self, merged_df: pd.DataFrame) -> BacktestResult:
         """ペアトレード戦略の時系列シミュレーションを実行する。"""
-        eth_col = "close_ETH_USDT"
-        btc_col = "close_BTC_USDT"
+        eth_col, btc_col = self._get_eth_btc_columns(merged_df)
 
         if merged_df.empty or eth_col not in merged_df.columns or btc_col not in merged_df.columns:
             self.result.equity_curve = [self.config.initial_capital]
@@ -439,7 +446,8 @@ class Backtester:
 
         # メイン: エクイティカーブ
         ax1.plot(timestamps, r.equity_curve)
-        ax1.set_ylabel("Equity (USD)")
+        currency = "JPY" if self.config.is_bitbank else "USD"
+        ax1.set_ylabel(f"Equity ({currency})")
         ax1.set_title("Backtest Equity Curve")
         ax1.grid(True)
 

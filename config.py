@@ -16,6 +16,14 @@ class Mode(str, Enum):
     BACKTEST = "BACKTEST"
 
 
+# 取引所別のペアトレード銘柄
+EXCHANGE_PAIR_SYMBOLS = {
+    "bitbank": ["BTC/JPY", "ETH/JPY"],
+    "bybit": ["BTC/USDT", "ETH/USDT"],
+    "binance": ["BTC/USDT", "ETH/USDT"],
+}
+
+
 @dataclass
 class Config:
     """アプリケーション設定。"""
@@ -39,6 +47,23 @@ class Config:
     slack_webhook_url: str = ""
     log_ttl_days: int = 90
 
+    @property
+    def pair_symbols(self) -> list[str]:
+        """取引所に応じたペアトレード銘柄を返す。"""
+        return EXCHANGE_PAIR_SYMBOLS.get(
+            self.exchange, EXCHANGE_PAIR_SYMBOLS["bybit"]
+        )
+
+    @property
+    def is_bitbank(self) -> bool:
+        """bitbank 取引所かどうか。"""
+        return self.exchange == "bitbank"
+
+    @property
+    def quote_currency(self) -> str:
+        """建値通貨（USDT または JPY）。"""
+        return "JPY" if self.is_bitbank else "USDT"
+
     @classmethod
     def from_env(cls) -> "Config":
         """環境変数から設定を読み込む。"""
@@ -50,12 +75,14 @@ class Config:
         except ValueError:
             mode = Mode.DRY_RUN
 
-        backtest_symbols_str = os.getenv("BACKTEST_SYMBOLS", "BTC/USDT,ETH/USDT")
+        exchange = os.getenv("EXCHANGE", "bybit").lower()
+        default_symbols = ",".join(EXCHANGE_PAIR_SYMBOLS.get(exchange, ["BTC/USDT", "ETH/USDT"]))
+        backtest_symbols_str = os.getenv("BACKTEST_SYMBOLS", default_symbols)
         backtest_symbols = [s.strip() for s in backtest_symbols_str.split(",") if s.strip()]
 
         return cls(
             mode=mode,
-            exchange=os.getenv("EXCHANGE", "bybit").lower(),
+            exchange=exchange,
             api_key=os.getenv("API_KEY", ""),
             api_secret=os.getenv("API_SECRET", ""),
             deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", ""),

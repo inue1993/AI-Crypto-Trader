@@ -35,7 +35,7 @@ AI-Crypto-Trader/
   - `mode`, `exchange`, `api_key`, `api_secret`, `deepseek_api_key`
   - `initial_capital`, `position_size_pct` (50%)
   - `backtest_start`, `backtest_end`
-  - `pair_symbols`: ["BTC/USDT", "ETH/USDT"] 固定
+  - `pair_symbols`: 取引所に応じて ["BTC/USDT", "ETH/USDT"] または ["BTC/JPY", "ETH/JPY"]（bitbank）
   - `z_score_entry_threshold`: 2.0
   - `z_score_exit_threshold`: 0.0
   - `rolling_window`: 200
@@ -43,7 +43,7 @@ AI-Crypto-Trader/
 
 ### 2.2 fetcher.py
 
-- **DataFetcher**: ccxt を用いたデータ取得
+- **DataFetcher**: ccxt を用いたデータ取得。bitbank は先物非対応のため現物のみ
 - **fetch_crypto_news(limit=10)**: ETH/BTC関連ニュースを取得
   - CryptoPanic API（CRYPTOPANIC_API_KEY 設定時）
   - RSS フォールバック（CoinDesk, CoinTelegraph、BTC/ETH キーワードでフィルタ）

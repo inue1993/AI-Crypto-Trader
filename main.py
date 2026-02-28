@@ -22,11 +22,13 @@ LOOP_INTERVAL_SEC = 3600  # 1時間ごと
 ROLLING_WINDOW = 200
 
 
-def _fetch_and_calc(fetcher: DataFetcher) -> Optional[dict[str, Any]]:
+def _fetch_and_calc(fetcher: DataFetcher, pair_symbols: list[str]) -> Optional[dict[str, Any]]:
     """OHLCV を取得し Z-Score を計算する。失敗時は None。"""
     since = int(time.time() * 1000) - (ROLLING_WINDOW + 50) * 3600 * 1000
-    btc_ohlcv = fetcher.fetch_ohlcv("BTC/USDT", "1h", since=since, limit=250)
-    eth_ohlcv = fetcher.fetch_ohlcv("ETH/USDT", "1h", since=since, limit=250)
+    btc_sym = pair_symbols[0]  # BTC/USDT or BTC/JPY
+    eth_sym = pair_symbols[1]  # ETH/USDT or ETH/JPY
+    btc_ohlcv = fetcher.fetch_ohlcv(btc_sym, "1h", since=since, limit=250)
+    eth_ohlcv = fetcher.fetch_ohlcv(eth_sym, "1h", since=since, limit=250)
 
     if not btc_ohlcv or not eth_ohlcv:
         logger.warning("OHLCV取得失敗。")
@@ -93,7 +95,7 @@ def run_once(
             state = loaded
 
     # 2. OHLCV 取得 → Z-Score 計算
-    data = _fetch_and_calc(fetcher)
+    data = _fetch_and_calc(fetcher, config.pair_symbols)
     if data is None:
         return None
 
@@ -253,7 +255,8 @@ def run_backtest(config: Config) -> None:
 
     use_ai = bool(config.deepseek_api_key)
     logger.info(
-        "ペアトレードバックテスト: BTC/USDT & ETH/USDT | 期間: %s 〜 %s | AI: %s",
+        "ペアトレードバックテスト: %s | 期間: %s 〜 %s | AI: %s",
+        " & ".join(config.pair_symbols),
         config.backtest_start or "未設定",
         config.backtest_end or "未設定",
         "DeepSeek API（本物）" if use_ai else "モック（常にENTRY）",
@@ -283,7 +286,8 @@ def run_backtest(config: Config) -> None:
 def run_dry_run_loop(config: Config) -> None:
     """DRY_RUN モード: 1時間ごとに run_once を実行する。"""
     logger.info(
-        "DRY_RUN 開始: 1時間ごとにZスコア監視 | AI: %s | ニュース: %s",
+        "DRY_RUN 開始: %s | 1時間ごとにZスコア監視 | AI: %s | ニュース: %s",
+        config.exchange,
         "DeepSeek API" if config.deepseek_api_key else "未設定（PASS）",
         "CryptoPanic/RSS" if config.cryptopanic_api_key else "RSS",
     )

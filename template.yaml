@@ -16,7 +16,8 @@ Parameters:
     AllowedValues:
       - bybit
       - binance
-    Description: 取引所
+      - bitbank
+    Description: 取引所（bitbank=日本国内）
   ApiKey:
     Type: String
     Default: ""

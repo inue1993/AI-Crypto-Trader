@@ -6,7 +6,7 @@ COPY requirements-lambda.txt ${LAMBDA_TASK_ROOT}/
 RUN pip install --no-cache-dir -r ${LAMBDA_TASK_ROOT}/requirements-lambda.txt
 
 # アプリケーションコードをコピー
-COPY config.py fetcher.py screener.py executor.py main.py storage.py notifier.py lambda_handler.py ${LAMBDA_TASK_ROOT}/
+COPY config.py fetcher.py screener.py executor.py main.py storage.py notifier.py lambda_handler.py bitbank_client.py ${LAMBDA_TASK_ROOT}/
 COPY backtester.py ${LAMBDA_TASK_ROOT}/
 
 # Lambda ハンドラーを指定

@@ -1,5 +1,6 @@
 #!/bin/bash
 # SAM build が Docker を検出しない場合の代替デプロイスクリプト
+# 使い方: ./deploy.sh [exchange]  例: ./deploy.sh bitbank
 set -e
 
 STACK_NAME="ai-crypto-trader"
@@ -12,6 +13,14 @@ cd "$PROJECT_DIR"
 
 # .env を読み込み
 [ -f .env ] && set -a && source .env && set +a
+
+# 引数で取引所を指定可能（.env より優先）
+if [ -n "${1:-}" ]; then
+  case "$1" in
+    bitbank|bybit|binance) EXCHANGE="$1" ;;
+    *) echo "不明な取引所: $1 (bitbank|bybit|binance)" >&2; exit 1 ;;
+  esac
+fi
 
 # AWS Account ID
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
@@ -46,8 +55,12 @@ with open("packaged.yaml", "w") as f:
 PYEOF
 
 echo "=== 5. SAM デプロイ ==="
+echo "取引所: ${EXCHANGE:-bybit} | モード: ${MODE:-DRY_RUN}"
+# bitbank の場合は初期資金を円建てでデフォルト 100万円
+DEFAULT_CAPITAL="10000"
+[ "${EXCHANGE:-bybit}" = "bitbank" ] && DEFAULT_CAPITAL="${INITIAL_CAPITAL:-1000000}"
 # 空のパラメータは省略（SAM は空値を嫌う）
-PARAMS="Mode=${MODE:-DRY_RUN} Exchange=${EXCHANGE:-bybit} InitialCapital=${INITIAL_CAPITAL:-10000}"
+PARAMS="Mode=${MODE:-DRY_RUN} Exchange=${EXCHANGE:-bybit} InitialCapital=${INITIAL_CAPITAL:-$DEFAULT_CAPITAL}"
 [ -n "${API_KEY:-}" ] && PARAMS="$PARAMS ApiKey=$API_KEY"
 [ -n "${API_SECRET:-}" ] && PARAMS="$PARAMS ApiSecret=$API_SECRET"
 [ -n "${DEEPSEEK_API_KEY:-}" ] && PARAMS="$PARAMS DeepSeekApiKey=$DEEPSEEK_API_KEY"

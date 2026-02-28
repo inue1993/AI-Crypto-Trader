@@ -137,6 +137,8 @@ class Executor:
         return self._spot_exchange
 
     def _get_perp_exchange(self) -> ccxt.Exchange:
+        if self.config.is_bitbank:
+            raise RuntimeError("bitbank は先物取引非対応です")
         if self._perp_exchange is None:
             ex_class = getattr(ccxt, self.config.exchange, ccxt.bybit)
             self._perp_exchange = ex_class(
@@ -174,7 +176,7 @@ class Executor:
             direction: "long_eth_short_btc" | "short_eth_long_btc"
             eth_price: ETH 現在価格
             btc_price: BTC 現在価格
-            capital_usd: 運用資金（USD）
+            capital_usd: 運用資金（USD または JPY）
 
         Returns:
             成功時 True
@@ -183,14 +185,85 @@ class Executor:
         eth_amount = alloc / eth_price if eth_price > 0 else 0
         btc_amount = alloc / btc_price if btc_price > 0 else 0
 
+        if self.config.is_bitbank:
+            return self._open_pair_trade_bitbank(
+                direction, eth_amount, btc_amount, eth_price, btc_price
+            )
+
         if direction == "long_eth_short_btc":
-            # ETH 現物買い + BTC 先物ショート
             return self._open_pair_long_eth_short_btc(eth_amount, btc_amount, eth_price, btc_price)
         if direction == "short_eth_long_btc":
-            # ETH 先物ショート + BTC 現物買い
             return self._open_pair_short_eth_long_btc(eth_amount, btc_amount, eth_price, btc_price)
         logger.error("不明な direction: %s", direction)
         return False
+
+    def _open_pair_trade_bitbank(
+        self,
+        direction: str,
+        eth_amount: float,
+        btc_amount: float,
+        eth_price: float,
+        btc_price: float,
+    ) -> bool:
+        """bitbank: 現物 + 信用取引でペアトレード。"""
+        eth_sym = "ETH/JPY"
+        btc_sym = "BTC/JPY"
+        if self.config.mode == Mode.DRY_RUN:
+            logger.info(
+                "【DRY RUN】bitbank ペアトレード エントリー: direction=%s | ETH qty=%.6f @%.0f | BTC qty=%.6f @%.0f",
+                direction, eth_amount, eth_price, btc_amount, btc_price,
+            )
+            return True
+
+        from bitbank_client import create_margin_order
+
+        spot = self._get_spot_exchange()
+        eth_order = None
+        btc_order = None
+        try:
+            if direction == "long_eth_short_btc":
+                eth_order = spot.create_market_buy_order(eth_sym, eth_amount)
+                btc_order_data = create_margin_order(
+                    self.config.api_key,
+                    self.config.api_secret,
+                    btc_sym,
+                    "sell",
+                    btc_amount,
+                    "short",
+                )
+                btc_order = btc_order_data
+            else:  # short_eth_long_btc
+                eth_order_data = create_margin_order(
+                    self.config.api_key,
+                    self.config.api_secret,
+                    eth_sym,
+                    "sell",
+                    eth_amount,
+                    "short",
+                )
+                eth_order = eth_order_data
+                btc_order = spot.create_market_buy_order(btc_sym, btc_amount)
+            logger.info("【LIVE】bitbank ペアトレード エントリー完了: %s", direction)
+            return True
+        except Exception as e:
+            logger.error("bitbank ペアトレード エントリー 片駆け: %s", e)
+            if eth_order is not None and btc_order is None:
+                if direction == "long_eth_short_btc":
+                    spot.create_market_sell_order(eth_sym, eth_amount)
+                else:
+                    create_margin_order(
+                        self.config.api_key, self.config.api_secret,
+                        eth_sym, "buy", eth_amount, "short",
+                    )  # ショート決済
+            elif eth_order is None and btc_order is not None:
+                if direction == "long_eth_short_btc":
+                    create_margin_order(
+                        self.config.api_key, self.config.api_secret,
+                        btc_sym, "buy", btc_amount, "short",
+                    )  # ショート決済
+                else:
+                    spot.create_market_sell_order(btc_sym, btc_amount)
+            return False
 
     def _open_pair_long_eth_short_btc(
         self,
@@ -297,14 +370,71 @@ class Executor:
         eth_amount = alloc / eth_entry if eth_entry > 0 else 0
         btc_amount = alloc / btc_entry if btc_entry > 0 else 0
 
+        if self.config.is_bitbank:
+            return self._close_pair_trade_bitbank(
+                direction, eth_amount, btc_amount, eth_price, btc_price
+            )
         if direction == "long_eth_short_btc":
-            # ETH 現物売り + BTC 先物買い（ポジション解消）
             return self._close_pair_long_eth_short_btc(eth_amount, btc_amount, eth_price, btc_price)
         if direction == "short_eth_long_btc":
-            # ETH 先物買い + BTC 現物売り
             return self._close_pair_short_eth_long_btc(eth_amount, btc_amount, eth_price, btc_price)
         logger.error("不明な direction: %s", direction)
         return False
+
+    def _close_pair_trade_bitbank(
+        self,
+        direction: str,
+        eth_amount: float,
+        btc_amount: float,
+        eth_price: float,
+        btc_price: float,
+    ) -> bool:
+        """bitbank: ペアトレード決済。"""
+        eth_sym = "ETH/JPY"
+        btc_sym = "BTC/JPY"
+        if self.config.mode == Mode.DRY_RUN:
+            logger.info("【DRY RUN】bitbank ペアトレード 決済: %s", direction)
+            return True
+
+        from bitbank_client import create_margin_order
+
+        spot = self._get_spot_exchange()
+        eth_order = None
+        btc_order = None
+        try:
+            if direction == "long_eth_short_btc":
+                eth_order = spot.create_market_sell_order(eth_sym, eth_amount)
+                btc_order = create_margin_order(
+                    self.config.api_key, self.config.api_secret,
+                    btc_sym, "buy", btc_amount, "short",
+                )
+            else:
+                eth_order = create_margin_order(
+                    self.config.api_key, self.config.api_secret,
+                    eth_sym, "buy", eth_amount, "short",
+                )
+                btc_order = spot.create_market_sell_order(btc_sym, btc_amount)
+            logger.info("【LIVE】bitbank ペアトレード 決済完了: %s", direction)
+            return True
+        except Exception as e:
+            logger.error("bitbank ペアトレード 決済 片駆け: %s", e)
+            if eth_order is not None and btc_order is None:
+                if direction == "long_eth_short_btc":
+                    spot.create_market_buy_order(eth_sym, eth_amount)
+                else:
+                    create_margin_order(
+                        self.config.api_key, self.config.api_secret,
+                        eth_sym, "sell", eth_amount, "short",
+                    )
+            elif eth_order is None and btc_order is not None:
+                if direction == "long_eth_short_btc":
+                    create_margin_order(
+                        self.config.api_key, self.config.api_secret,
+                        btc_sym, "sell", btc_amount, "short",
+                    )
+                else:
+                    spot.create_market_buy_order(btc_sym, btc_amount)
+            return False
 
     def _close_pair_long_eth_short_btc(
         self,

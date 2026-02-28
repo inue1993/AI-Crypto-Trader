@@ -8,7 +8,7 @@
 - **コスト考慮エントリー**: 想定FR収益が往復手数料を回収可能な銘柄のみエントリー
 - **ホールド重視**: 最低保持期間（20日）+ 持続的マイナスFR確認後のみ退出
 - **3つの動作モード**: LIVE（実運用）、DRY_RUN（仮想運用）、BACKTEST（過去検証）
-- **対応取引所**: Binance / Bybit（ccxt 経由）
+- **対応取引所**: Binance / Bybit / bitbank（日本国内・金融庁登録済み）
 
 ## 必要条件
 
@@ -36,17 +36,17 @@ cp .env.example .env
 | 変数 | 説明 | デフォルト |
 |------|------|------------|
 | `MODE` | 動作モード: LIVE / DRY_RUN / BACKTEST | DRY_RUN |
-| `EXCHANGE` | 取引所: binance / bybit | bybit |
+| `EXCHANGE` | 取引所: binance / bybit / bitbank（日本国内） | bybit |
 | `API_KEY` | API キー（LIVE 時必須） | - |
 | `API_SECRET` | API シークレット（LIVE 時必須） | - |
 | `DEEPSEEK_API_KEY` | DeepSeek API キー（AI銘柄選定、DRY_RUN/LIVE時） | - |
-| `INITIAL_CAPITAL` | 初期資金（USD） | 10000 |
+| `INITIAL_CAPITAL` | 初期資金（USD または JPY、bitbank 時は円） | 10000 |
 | `MAX_POSITIONS` | 最大同時ポジション数 | 2 |
 | `TAKER_FEE` | 取引手数料率 | 0.001 |
 | `SLIPPAGE` | 推定スリッページ率 | 0.0005 |
 | `BACKTEST_START` | バックテスト開始日 | 2025-11-01 |
 | `BACKTEST_END` | バックテスト終了日 | 2026-02-28 |
-| `BACKTEST_SYMBOLS` | バックテスト対象銘柄（カンマ区切り） | BTC/USDT,ETH/USDT |
+| `BACKTEST_SYMBOLS` | バックテスト対象銘柄（カンマ区切り。bitbank 時は BTC/JPY,ETH/JPY） | 取引所に応じて自動 |
 
 ## 使い方
 
@@ -77,6 +77,22 @@ MODE=LIVE python main.py
 
 - API キー・シークレットの設定が必須
 - 片駆け時は緊急決済ロジックで自動クローズ
+
+## デプロイ
+
+```bash
+# デフォルト（bybit）
+./scripts/deploy.sh
+
+# bitbank でデプロイ（引数で指定、.env より優先）
+./scripts/deploy.sh bitbank
+
+# 環境変数で指定する場合
+EXCHANGE=bitbank ./scripts/deploy.sh
+```
+
+- bitbank 指定時は初期資金のデフォルトが 100万円（円）になります
+- `.env` の `EXCHANGE` より引数が優先されます
 
 ## 運用スクリプト (ops.py)
 
