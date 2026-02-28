@@ -1,0 +1,18 @@
+# SAM デプロイ設定
+# 初回は `sam deploy --guided` で対話的に設定し、このファイルが生成される
+# 以下はテンプレート例
+
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "ai-crypto-trader"
+resolve_s3 = true
+s3_prefix = "ai-crypto-trader"
+region = "ap-northeast-1"
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = [
+    "Mode=DRY_RUN",
+    "Exchange=bybit",
+    "InitialCapital=10000",
+]
+confirm_changeset = true

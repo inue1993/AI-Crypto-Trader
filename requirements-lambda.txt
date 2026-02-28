@@ -1,0 +1,7 @@
+# Lambda 用依存（matplotlib 除外でイメージサイズ削減）
+# boto3 は Lambda ランタイムに含まれる
+ccxt>=4.0.0
+pandas>=2.0.0
+numpy>=1.24.0
+python-dotenv>=1.0.0
+openai>=1.0.0

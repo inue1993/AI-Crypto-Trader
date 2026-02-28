@@ -1,4 +1,4 @@
-# 実装設計書
+# 実装設計書（ペアトレード版）
 
 本ドキュメントは `docs/spec.md` に基づく実装の詳細を記述する。
 
@@ -7,11 +7,18 @@
 ```
 AI-Crypto-Trader/
 ├── config.py          # モード切替・設定管理
-├── fetcher.py         # リアルタイム・過去データ取得
-├── screener.py        # 銘柄選定ロジック（AIモック）
-├── executor.py        # 注文執行・ポートフォリオ管理
-├── backtester.py      # バックテスト実行・結果出力
-├── main.py            # メインエントリーポイント
+├── fetcher.py         # OHLCV データ取得
+├── screener.py        # Z-Score計算・AI判定（ペアトレード用）
+├── executor.py        # 注文執行・ペアトレード（open_pair_trade, close_pair_trade）
+├── backtester.py      # ペアトレードバックテスト・グラフ出力
+├── main.py            # メインエントリーポイント（run_once ステートマシン）
+├── storage.py         # DynamoDB 永続化レイヤー
+├── notifier.py        # Slack Webhook 通知
+├── lambda_handler.py  # Lambda エントリーポイント
+├── ops.py             # 運用 CLI
+├── template.yaml      # SAM テンプレート
+├── Dockerfile         # Lambda コンテナ
+├── samconfig.toml     # SAM デプロイ設定
 ├── .env.example       # 環境変数テンプレート
 ├── requirements.txt   # 依存パッケージ
 └── docs/
@@ -25,81 +32,127 @@ AI-Crypto-Trader/
 
 - **Mode**: Enum (LIVE / DRY_RUN / BACKTEST)
 - **Config**: dataclass
-  - `mode`, `exchange`, `api_key`, `api_secret`
-  - `initial_capital`, `max_positions`, `min_fr_threshold`
-  - `taker_fee`, `slippage`
-  - `backtest_start`, `backtest_end`, `backtest_symbols`
-- **Config.from_env()**: `.env` から設定を読み込む
+  - `mode`, `exchange`, `api_key`, `api_secret`, `deepseek_api_key`
+  - `initial_capital`, `position_size_pct` (50%)
+  - `backtest_start`, `backtest_end`
+  - `pair_symbols`: ["BTC/USDT", "ETH/USDT"] 固定
+  - `z_score_entry_threshold`: 2.0
+  - `z_score_exit_threshold`: 0.0
+  - `rolling_window`: 200
+  - `transaction_cost_rate`: 0.0015 (0.15% per side)
 
 ### 2.2 fetcher.py
 
 - **DataFetcher**: ccxt を用いたデータ取得
-  - `get_tradable_symbols()`: 現物＋先物両方で上場している銘柄リスト
-  - `get_funding_rates(symbols)`: 各銘柄の現在FR
-  - `get_tickers(symbols)`: 価格・出来高
-  - `get_orderbook(symbol, limit)`: オーダーブック
-  - `fetch_ohlcv()`, `fetch_funding_rate_history()`: 過去データ
-  - `get_market_data()`: Step 1 用一括取得
+- **fetch_crypto_news(limit=10)**: ETH/BTC関連ニュースを取得
+  - CryptoPanic API（CRYPTOPANIC_API_KEY 設定時）
+  - RSS フォールバック（CoinDesk, CoinTelegraph、BTC/ETH キーワードでフィルタ）
+  - `fetch_ohlcv()`: 1時間足OHLCV取得（ペアトレード用）
+  - 既存の `get_tradable_symbols`, `get_funding_rates` 等は LIVE/DRY_RUN 用に残す
 
-### 2.3 screener.py
+### 2.3 screener.py（ペアトレード版）
 
-- **Screener**: 銘柄選定
-  - `screen(market_data)`: 出来高過少・FRマイナス除外
-  - `select_top(candidates, top_n)`: FR上位N銘柄選定（AIモック）
-  - `run(market_data)`: 一括実行
+- **定数:**
+  - `TRANSACTION_COST_RATE = 0.0015` (0.15% per side)
+  - `Z_SCORE_ENTRY_THRESHOLD = 2.0`
+  - `Z_SCORE_EXIT_THRESHOLD = 0.5` (平均回帰: |Z|≤0.5 でエグジット)
+  - `Z_SCORE_STOP_LOSS = 3.5` (ハード・ストップロス: |Z|>3.5 で即座に損切り)
+  - `ROLLING_WINDOW = 200`
+- **PairTradeScreener**:
+  - `calc_z_score(eth_close, btc_close, window)`: Ratio, Rolling Mean, Std, Z-Score を計算
+  - `check_entry_signal(z_score)`: Z-Score が ±2.0 を超え、かつ |Z|≤3.5 の範囲か判定（ストップロス域ではエントリー禁止）
+  - `check_exit_signal(z_score)`: Z-Score が 0 に戻ったか判定
+  - `check_stop_loss(z_score, direction)`: |Z|>3.5 で即座に損切り
+  - **AI判定**（DeepSeek）:
+    - システムプロンプト: 2シグマ乖離がファンダメンタルズ変化かノイズかを判定
+    - `ai_decision(..., news_titles)`: DeepSeek API 呼び出し
+    - **news_titles あり（DRY_RUN）**: ニュースベースのプロンプト（悪材料→PASS、ノイズ→ENTRY）
+    - **news_titles なし（バックテスト）**: 価格データのみのプロンプト
+    - DEEPSEEK_API_KEY 設定時: 本物のAPI、未設定時: モック（常に ENTRY）
+    - エントリー条件: decision=="ENTRY" かつ confidence > 70
+    - API エラー時: PASS（安全側）、time.sleep(1) でレートリミット回避
 
-### 2.4 executor.py
+### 2.4 backtester.py（ペアトレード版）
 
-- **Portfolio**: ポジション管理
-  - `positions`, `balance`, `trade_history`
-  - `add_position()`, `close_position()`, `record_funding()`
-- **Executor**: 注文執行
-  - DRY_RUN: 仮想発注、Portfolio に記録
-  - LIVE: ccxt で実発注、片駆け時は緊急決済
-  - `open_delta_neutral()`, `close_delta_neutral()`
-  - `check_and_collect_funding()`: FR収益計上
-
-### 2.5 backtester.py
-
-- **Backtester**: バックテスト
-  - `load_data()`: API または CSV から OHLCV + FR 履歴取得
+- **BacktestResult**:
+  - `equity_curve`, `timestamps`, `z_scores`
+  - `total_trades`, `winning_trades`, `total_costs`, `max_drawdown`
+- **Backtester**:
+  - `load_data()`: BTC/USDT, ETH/USDT の1時間足OHLCVを取得（APIまたはCSV）
   - `run()`: 時系列シミュレーション
-  - `_calc_equity_delta_neutral()`: デルタニュートラル用エクイティ計算（現物・先物の含み損益を相殺し、locked_notional で一定）
-  - `calculate_metrics()`: 勝率、最大DD、累積FR、総コスト
-  - `plot_equity_curve()`: matplotlib でエクイティカーブ
+    - 各タイムスタンプで Ratio, Z-Score を計算
+    - エントリー: Z-Score < -2.0 または > 2.0 かつ AI が ENTRY
+    - エグジット: Z-Score が 0 に戻ったタイミング
+    - 取引コスト: 0.15% × 2銘柄 × 2（エントリー＋エグジット）= 0.6% 往復
+    - ポジションサイズ: 資金の 50%（各銘柄 25%）
+  - `plot_equity_curve()`: Z-Score サブグラフ + エクイティカーブ メイングラフを上下に並べて描画
   - `export_summary()`: CSV 出力
-  - 各タイムステップでログ出力: 価格、現物/先物の数量・USD価値・未実現損益、累積FR
 
-### 2.6 main.py
+### 2.5 main.py
 
-- **run_backtest()**: BACKTEST モード
-- **run_live_loop()**: LIVE / DRY_RUN の 1 時間ループ
-  - データ取得 → スクリーニング → ポジション管理 → FR収益計上 → 終了条件チェック
+- **run_once()**: 1回分の監視・取引ロジック。DRY_RUN/LIVE 共通のステートマシン。storage/notifier を渡すと DynamoDB 保存・Slack 通知
+- **run_backtest()**: BACKTEST モードでペアトレードバックテスト実行
+- **run_dry_run_loop()**: DRY_RUN モード（1時間ごとに run_once をループ）
 
-## 3. データフロー
+### 2.6 storage.py
+
+- **DynamoDBStorage**: DynamoDB Single Table Design
+  - `load_position_state()` / `save_position_state()`: ポジション状態
+  - `save_monitor_log()`: 毎時モニタリング結果
+  - `save_signal()`: シグナルイベント
+  - `save_trade()`: トレード履歴
+  - `query_recent_monitors()` / `query_trades()`: クエリ
+  - `reset_position_state()`: 緊急リセット
+
+### 2.7 notifier.py
+
+- **SlackNotifier**: Slack Incoming Webhook
+  - `send_signal_alert()`: シグナル検出
+  - `send_entry_alert()`: エントリー実行（LIVE）
+  - `send_exit_alert()`: エグジット実行（LIVE）
+
+## 3. データフロー（バックテスト）
 
 ```
 main.py
-  ├─ BACKTEST → Backtester.load_data() → run() → plot + export
-  └─ LIVE/DRY_RUN → ループ
-        ├─ DataFetcher.get_market_data()
-        ├─ Executor.check_and_collect_funding()
-        ├─ FR < 閾値 → Executor.close_delta_neutral()
-        ├─ Screener.run() → 選定銘柄
-        └─ Executor.open_delta_neutral()（空きスロット分）
+  └─ BACKTEST
+        ├─ Backtester.load_data() → BTC/USDT, ETH/USDT の OHLCV
+        ├─ Backtester.run()
+        │     ├─ 各 ts で Ratio = ETH_close / BTC_close
+        │     ├─ Rolling Mean, Std, Z-Score 計算
+        │     ├─ Z-Score < -2 or > 2 → AI判定（モック: ENTRY）
+        │     ├─ エントリー: Long ETH + Short BTC (or 逆)
+        │     ├─ Z-Score → 0 でエグジット
+        │     └─ 取引コスト 0.15% × 各銘柄 × 往復
+        ├─ plot_equity_curve() → Z-Score + Equity グラフ
+        └─ export_summary()
 ```
 
-## 4. バックテスト設定の注意
+## 4. 取引コストの内訳
 
-- `BACKTEST_START` / `BACKTEST_END`: Bybit の FR 履歴は直近のみのため、OHLCV と期間が重なるよう設定する。
-- `MIN_FR_THRESHOLD`: 0.000005 程度にするとバックテストで取引が発生しやすい。
+- エントリー時: ETH 0.15%, BTC 0.15% (計 0.3%)
+- エグジット時: ETH 0.15%, BTC 0.15% (計 0.3%)
+- 往復合計: 0.6% (手数料＋スプレッド想定)
 
-## 5. 環境変数
+## 5. AWS デプロイ・ストレージ
 
-`.env.example` 参照。主要項目:
+### 5.1 DynamoDB テーブル設計（Single Table）
 
-- `MODE`: LIVE | DRY_RUN | BACKTEST
-- `EXCHANGE`: binance | bybit
-- `API_KEY`, `API_SECRET`
-- `INITIAL_CAPITAL`, `MAX_POSITIONS`, `MIN_FR_THRESHOLD`
-- `BACKTEST_START`, `BACKTEST_END`, `BACKTEST_SYMBOLS`
+| pk    | sk           | 用途                 |
+|-------|--------------|----------------------|
+| STATE | position     | 現在のオープンポジション |
+| MONITOR | ISO8601    | 毎時モニタリング結果   |
+| SIGNAL | ISO8601     | シグナル検出イベント   |
+| TRADE | ISO8601      | 完了したトレード記録   |
+
+TTL 90日で自動削除（STATE は TTL なし）。
+
+### 5.2 LIVE ステートマシン
+
+Lambda 毎時起動時: NO_POSITION → エントリー判定（AI含む）→ 条件合致で注文 → OPEN。OPEN → エグジット/ストップロス判定 → 条件合致で決済 → NO_POSITION。
+
+### 5.3 運用手順
+
+- `python ops.py status`: Lambda MODE・**EventBridge（deployed_at, schedule, state）**・ポジション・直近 Z-Score を表示
+- `python ops.py logs` / `trades [--all]`（全件表示）/ `invoke` / `stop`
+- `sam deploy --parameter-overrides Mode=LIVE` で LIVE 昇格

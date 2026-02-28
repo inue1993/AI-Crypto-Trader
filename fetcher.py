@@ -2,11 +2,25 @@
 
 from __future__ import annotations
 
+import logging
+import re
+import urllib.request
+import xml.etree.ElementTree as ET
 from typing import Any, Optional
 
 import ccxt
 
 from config import Config
+
+logger = logging.getLogger(__name__)
+
+# 暗号通貨ニュース取得
+CRYPTOPANIC_API_URL = "https://cryptopanic.com/api/developer/v2/posts/"
+RSS_FEEDS = [
+    "https://www.coindesk.com/arc/outboundfeeds/rss/",
+    "https://cointelegraph.com/rss",
+]
+NEWS_KEYWORDS = re.compile(r"\b(bitcoin|btc|ethereum|eth)\b", re.I)
 
 
 class DataFetcher:
@@ -114,6 +128,7 @@ class DataFetcher:
                     "last": float(ticker.get("last", 0)),
                     "volume": float(ticker.get("baseVolume", 0)),
                     "quoteVolume": float(ticker.get("quoteVolume", 0)),
+                    "percentage": float(ticker.get("percentage", 0)),
                 }
             except Exception:
                 continue
@@ -162,6 +177,80 @@ class DataFetcher:
 
         return []
 
+    def fetch_open_interest_history(
+        self,
+        symbol: str,
+        timeframe: str = "1h",
+        since: Optional[int] = None,
+        limit: Optional[int] = 30,
+    ) -> list[dict[str, Any]]:
+        """過去のOpen Interest（未決済建玉）履歴を取得する。"""
+        perp = self._get_perpetual_exchange()
+        perp_symbol = self._to_perpetual_symbol(symbol)
+        if perp_symbol is None:
+            return []
+
+        try:
+            if hasattr(perp, "fetch_open_interest_history"):
+                return perp.fetch_open_interest_history(
+                    perp_symbol, timeframe=timeframe, since=since, limit=limit
+                )
+        except Exception:
+            pass
+
+        return []
+
+    def get_oi_change_pct_24h(self, symbol: str) -> Optional[float]:
+        """過去24時間のOI変化率（%）を取得する。取得失敗時はNone。"""
+        import time as _time
+
+        perp = self._get_perpetual_exchange()
+        perp_symbol = self._to_perpetual_symbol(symbol)
+        if perp_symbol is None:
+            return None
+
+        try:
+            if not hasattr(perp, "fetch_open_interest_history"):
+                return None
+            since = int(_time.time() * 1000) - 25 * 3600 * 1000
+            oi_hist = self.fetch_open_interest_history(
+                symbol, timeframe="1h", since=since, limit=30
+            )
+            if not oi_hist or len(oi_hist) < 2:
+                return None
+            oi_old = float(
+                oi_hist[0].get("openInterestAmount", oi_hist[0].get("openInterest", 0))
+            )
+            oi_new = float(
+                oi_hist[-1].get("openInterestAmount", oi_hist[-1].get("openInterest", 0))
+            )
+            if oi_old and oi_old > 0:
+                return (oi_new - oi_old) / oi_old * 100
+            return None
+        except Exception:
+            return None
+
+    def get_oi_volume_ratio_pct(self, symbol: str) -> Optional[float]:
+        """OI履歴が取れない場合のフォールバック: 現在OI（USD）と24h出来高の比率（%）を返す。"""
+        perp = self._get_perpetual_exchange()
+        perp_symbol = self._to_perpetual_symbol(symbol)
+        if perp_symbol is None:
+            return None
+        try:
+            oi = perp.fetch_open_interest(perp_symbol)
+            oi_amt = float(oi.get("openInterestAmount", 0) or 0)
+            tk = self.get_tickers([symbol])
+            if symbol not in tk or not oi_amt:
+                return None
+            price = float(tk[symbol].get("last", 0) or 0)
+            vol = float(tk[symbol].get("quoteVolume", 0) or 0)
+            if vol and vol > 0 and price > 0:
+                oi_usd = oi_amt * price
+                return oi_usd / vol * 100
+            return None
+        except Exception:
+            return None
+
     def get_market_data(self) -> dict[str, Any]:
         """Step 1 用: 銘柄一覧、FR、ティッカー、オーダーブックを一括取得する。"""
         symbols = self.get_tradable_symbols()
@@ -174,6 +263,8 @@ class DataFetcher:
                 continue
             fr = funding_rates[symbol]
             tk = tickers[symbol]
+            oi_change = self.get_oi_change_pct_24h(symbol)
+            oi_vol_ratio = self.get_oi_volume_ratio_pct(symbol) if oi_change is None else None
             market_data.append(
                 {
                     "symbol": symbol,
@@ -181,7 +272,65 @@ class DataFetcher:
                     "price": tk["last"],
                     "volume_24h": tk["volume"],
                     "quote_volume_24h": tk["quoteVolume"],
+                    "price_change_pct_24h": tk.get("percentage", 0),
+                    "oi_change_pct_24h": oi_change,
+                    "oi_volume_ratio_pct": oi_vol_ratio,
                 }
             )
 
         return {"symbols": symbols, "market_data": market_data}
+
+    def fetch_crypto_news(self, limit: int = 10) -> list[str]:
+        """ETH/BTC関連の最新ニュースヘッドラインを5〜10件取得する。
+
+        CryptoPanic API（CRYPTOPANIC_API_KEY 設定時）を優先。
+        未設定時はRSSフィード（CoinDesk, CoinTelegraph）から取得。
+
+        Returns:
+            ニュースタイトルのリスト（最大 limit 件）
+        """
+        if self.config.cryptopanic_api_key:
+            return self._fetch_news_cryptopanic(limit)
+        return self._fetch_news_rss(limit)
+
+    def _fetch_news_cryptopanic(self, limit: int) -> list[str]:
+        """CryptoPanic API からニュースを取得する。"""
+        import json
+
+        url = (
+            f"{CRYPTOPANIC_API_URL}"
+            f"?auth_token={self.config.cryptopanic_api_key}"
+            f"&currencies=BTC,ETH"
+            f"&filter=hot"
+            f"&public=true"
+        )
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "AI-Crypto-Trader/1.0"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode())
+            results = data.get("results", [])
+            titles = [r.get("title", "") for r in results[:limit] if r.get("title")]
+            return titles
+        except Exception as e:
+            logger.warning("[News] CryptoPanic API 取得失敗: %s → RSS にフォールバック", e)
+            return self._fetch_news_rss(limit)
+
+    def _fetch_news_rss(self, limit: int) -> list[str]:
+        """RSSフィードからETH/BTC関連ニュースを取得する。"""
+        all_titles: list[str] = []
+        for feed_url in RSS_FEEDS:
+            try:
+                req = urllib.request.Request(feed_url, headers={"User-Agent": "AI-Crypto-Trader/1.0"})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    tree = ET.parse(resp)
+                root = tree.getroot()
+                ns = {"dc": "http://purl.org/dc/elements/1.1/"}
+                for item in root.findall(".//item")[:limit]:
+                    title_el = item.find("title")
+                    if title_el is not None and title_el.text:
+                        title = title_el.text.strip()
+                        if NEWS_KEYWORDS.search(title):
+                            all_titles.append(title)
+            except Exception as e:
+                logger.debug("[News] RSS %s 取得失敗: %s", feed_url[:40], e)
+        return all_titles[:limit]

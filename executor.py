@@ -161,6 +161,217 @@ class Executor:
                 return candidate
         return None
 
+    def open_pair_trade(
+        self,
+        direction: str,
+        eth_price: float,
+        btc_price: float,
+        capital_usd: float,
+    ) -> bool:
+        """ペアトレードのエントリー。各銘柄に capital の 25% ずつ配分。
+
+        Args:
+            direction: "long_eth_short_btc" | "short_eth_long_btc"
+            eth_price: ETH 現在価格
+            btc_price: BTC 現在価格
+            capital_usd: 運用資金（USD）
+
+        Returns:
+            成功時 True
+        """
+        alloc = capital_usd * 0.25  # 各銘柄 25%
+        eth_amount = alloc / eth_price if eth_price > 0 else 0
+        btc_amount = alloc / btc_price if btc_price > 0 else 0
+
+        if direction == "long_eth_short_btc":
+            # ETH 現物買い + BTC 先物ショート
+            return self._open_pair_long_eth_short_btc(eth_amount, btc_amount, eth_price, btc_price)
+        if direction == "short_eth_long_btc":
+            # ETH 先物ショート + BTC 現物買い
+            return self._open_pair_short_eth_long_btc(eth_amount, btc_amount, eth_price, btc_price)
+        logger.error("不明な direction: %s", direction)
+        return False
+
+    def _open_pair_long_eth_short_btc(
+        self,
+        eth_amount: float,
+        btc_amount: float,
+        eth_price: float,
+        btc_price: float,
+    ) -> bool:
+        """ETH 現物買い + BTC 先物ショート"""
+        if self.config.mode == Mode.DRY_RUN:
+            logger.info(
+                "【DRY RUN】ペアトレード エントリー: ETH現物買い qty=%.6f @%.2f | BTC先物ショート qty=%.6f @%.2f",
+                eth_amount, eth_price, btc_amount, btc_price,
+            )
+            return True
+
+        spot = self._get_spot_exchange()
+        perp = self._get_perp_exchange()
+        eth_perp = self._to_perp_symbol("ETH/USDT")
+        btc_perp = self._to_perp_symbol("BTC/USDT")
+        if not eth_perp or not btc_perp:
+            logger.error("先物シンボルが見つかりません")
+            return False
+
+        eth_order = None
+        btc_order = None
+        try:
+            eth_order = spot.create_market_buy_order("ETH/USDT", eth_amount)
+            btc_order = perp.create_market_sell_order(btc_perp, btc_amount)
+            logger.info(
+                "【LIVE】ペアトレード エントリー: ETH現物買い | BTC先物ショート 完了",
+            )
+            return True
+        except Exception as e:
+            logger.error("ペアトレード エントリー 片駆け: %s", e)
+            if eth_order is not None and btc_order is None:
+                spot.create_market_sell_order("ETH/USDT", eth_amount)
+            elif eth_order is None and btc_order is not None:
+                perp.create_market_buy_order(btc_perp, btc_amount)
+            return False
+
+    def _open_pair_short_eth_long_btc(
+        self,
+        eth_amount: float,
+        btc_amount: float,
+        eth_price: float,
+        btc_price: float,
+    ) -> bool:
+        """ETH 先物ショート + BTC 現物買い"""
+        if self.config.mode == Mode.DRY_RUN:
+            logger.info(
+                "【DRY RUN】ペアトレード エントリー: ETH先物ショート qty=%.6f @%.2f | BTC現物買い qty=%.6f @%.2f",
+                eth_amount, eth_price, btc_amount, btc_price,
+            )
+            return True
+
+        spot = self._get_spot_exchange()
+        perp = self._get_perp_exchange()
+        eth_perp = self._to_perp_symbol("ETH/USDT")
+        btc_perp = self._to_perp_symbol("BTC/USDT")
+        if not eth_perp or not btc_perp:
+            logger.error("先物シンボルが見つかりません")
+            return False
+
+        eth_order = None
+        btc_order = None
+        try:
+            eth_order = perp.create_market_sell_order(eth_perp, eth_amount)
+            btc_order = spot.create_market_buy_order("BTC/USDT", btc_amount)
+            logger.info(
+                "【LIVE】ペアトレード エントリー: ETH先物ショート | BTC現物買い 完了",
+            )
+            return True
+        except Exception as e:
+            logger.error("ペアトレード エントリー 片駆け: %s", e)
+            if eth_order is not None and btc_order is None:
+                perp.create_market_buy_order(eth_perp, eth_amount)
+            elif eth_order is None and btc_order is not None:
+                spot.create_market_sell_order("BTC/USDT", btc_amount)
+            return False
+
+    def close_pair_trade(
+        self,
+        direction: str,
+        eth_price: float,
+        btc_price: float,
+        state: dict[str, Any],
+    ) -> bool:
+        """ペアトレードの決済。
+
+        Args:
+            direction: "long_eth_short_btc" | "short_eth_long_btc"
+            eth_price: ETH 現在価格
+            btc_price: BTC 現在価格
+            state: ポジション状態（position_size_usd または eth_amount, btc_amount）
+
+        Returns:
+            成功時 True
+        """
+        position_usd = state.get("position_size_usd", 0)
+        eth_entry = state.get("eth_entry_price", eth_price)
+        btc_entry = state.get("btc_entry_price", btc_price)
+        alloc = position_usd * 0.5 if position_usd else 0  # 各銘柄分
+        eth_amount = alloc / eth_entry if eth_entry > 0 else 0
+        btc_amount = alloc / btc_entry if btc_entry > 0 else 0
+
+        if direction == "long_eth_short_btc":
+            # ETH 現物売り + BTC 先物買い（ポジション解消）
+            return self._close_pair_long_eth_short_btc(eth_amount, btc_amount, eth_price, btc_price)
+        if direction == "short_eth_long_btc":
+            # ETH 先物買い + BTC 現物売り
+            return self._close_pair_short_eth_long_btc(eth_amount, btc_amount, eth_price, btc_price)
+        logger.error("不明な direction: %s", direction)
+        return False
+
+    def _close_pair_long_eth_short_btc(
+        self,
+        eth_amount: float,
+        btc_amount: float,
+        eth_price: float,
+        btc_price: float,
+    ) -> bool:
+        """ETH 現物売り + BTC 先物買い"""
+        if self.config.mode == Mode.DRY_RUN:
+            logger.info("【DRY RUN】ペアトレード 決済: long_eth_short_btc")
+            return True
+
+        spot = self._get_spot_exchange()
+        perp = self._get_perp_exchange()
+        btc_perp = self._to_perp_symbol("BTC/USDT")
+        if not btc_perp:
+            return False
+
+        eth_order = None
+        btc_order = None
+        try:
+            eth_order = spot.create_market_sell_order("ETH/USDT", eth_amount)
+            btc_order = perp.create_market_buy_order(btc_perp, btc_amount)
+            logger.info("【LIVE】ペアトレード 決済: long_eth_short_btc 完了")
+            return True
+        except Exception as e:
+            logger.error("ペアトレード 決済 片駆け: %s", e)
+            if eth_order is not None and btc_order is None:
+                spot.create_market_buy_order("ETH/USDT", eth_amount)
+            elif eth_order is None and btc_order is not None:
+                perp.create_market_sell_order(btc_perp, btc_amount)
+            return False
+
+    def _close_pair_short_eth_long_btc(
+        self,
+        eth_amount: float,
+        btc_amount: float,
+        eth_price: float,
+        btc_price: float,
+    ) -> bool:
+        """ETH 先物買い + BTC 現物売り"""
+        if self.config.mode == Mode.DRY_RUN:
+            logger.info("【DRY RUN】ペアトレード 決済: short_eth_long_btc")
+            return True
+
+        spot = self._get_spot_exchange()
+        perp = self._get_perp_exchange()
+        eth_perp = self._to_perp_symbol("ETH/USDT")
+        if not eth_perp:
+            return False
+
+        eth_order = None
+        btc_order = None
+        try:
+            eth_order = perp.create_market_buy_order(eth_perp, eth_amount)
+            btc_order = spot.create_market_sell_order("BTC/USDT", btc_amount)
+            logger.info("【LIVE】ペアトレード 決済: short_eth_long_btc 完了")
+            return True
+        except Exception as e:
+            logger.error("ペアトレード 決済 片駆け: %s", e)
+            if eth_order is not None and btc_order is None:
+                perp.create_market_sell_order(eth_perp, eth_amount)
+            elif eth_order is None and btc_order is not None:
+                spot.create_market_buy_order("BTC/USDT", btc_amount)
+            return False
+
     def open_delta_neutral(
         self, symbol: str, amount: float, price: float
     ) -> bool:

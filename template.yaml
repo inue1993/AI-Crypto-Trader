@@ -1,0 +1,129 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: AI-Crypto-Trader ペアトレード Lambda (DRY_RUN / LIVE)
+
+Parameters:
+  Mode:
+    Type: String
+    Default: DRY_RUN
+    AllowedValues:
+      - DRY_RUN
+      - LIVE
+    Description: 動作モード
+  Exchange:
+    Type: String
+    Default: bybit
+    AllowedValues:
+      - bybit
+      - binance
+    Description: 取引所
+  ApiKey:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: 取引所 API Key (LIVE 時必須)
+  ApiSecret:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: 取引所 API Secret (LIVE 時必須)
+  DeepSeekApiKey:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: DeepSeek API Key
+  CryptoPanicApiKey:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: CryptoPanic API Key
+  SlackWebhookUrl:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Slack Incoming Webhook URL
+  InitialCapital:
+    Type: String
+    Default: "10000"
+    Description: 初期資金 (USD)
+
+Globals:
+  Function:
+    Timeout: 120
+    MemorySize: 512
+
+Resources:
+  CryptoTraderTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-CryptoTrader"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  CryptoTraderFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-CryptoTrader"
+      PackageType: Image
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CryptoTraderTable
+      Environment:
+        Variables:
+          MODE: !Ref Mode
+          EXCHANGE: !Ref Exchange
+          API_KEY: !Ref ApiKey
+          API_SECRET: !Ref ApiSecret
+          DEEPSEEK_API_KEY: !Ref DeepSeekApiKey
+          CRYPTOPANIC_API_KEY: !Ref CryptoPanicApiKey
+          SLACK_WEBHOOK_URL: !Ref SlackWebhookUrl
+          DYNAMODB_TABLE: !Ref CryptoTraderTable
+          INITIAL_CAPITAL: !Ref InitialCapital
+          LOG_TTL_DAYS: "90"
+    Metadata:
+      DockerTag: latest
+      DockerContext: .
+      Dockerfile: Dockerfile
+
+  CronRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${AWS::StackName}-Hourly"
+      Description: 1時間ごとに Lambda を起動
+      ScheduleExpression: rate(1 hour)
+      State: ENABLED
+      Targets:
+        - Id: CryptoTraderTarget
+          Arn: !GetAtt CryptoTraderFunction.Arn
+
+  CronPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CryptoTraderFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt CronRule.Arn
+
+Outputs:
+  CryptoTraderTableName:
+    Description: DynamoDB テーブル名
+    Value: !Ref CryptoTraderTable
+    Export:
+      Name: !Sub "${AWS::StackName}-TableName"
+  CryptoTraderFunctionArn:
+    Description: Lambda 関数 ARN
+    Value: !GetAtt CryptoTraderFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-FunctionArn"
