@@ -1,0 +1,5 @@
+#!/bin/bash
+# venv 内の Python で ops.py を実行するラッパー（venv の activate 不要）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+exec "${SCRIPT_DIR}/.venv/bin/python" ops.py "$@"

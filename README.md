@@ -94,9 +94,17 @@ EXCHANGE=bitbank ./scripts/deploy.sh
 - bitbank 指定時は初期資金のデフォルトが 100万円（円）になります
 - `.env` の `EXCHANGE` より引数が優先されます
 
-## 運用スクリプト (ops.py)
+## 運用スクリプト (ops)
 
 AWS Lambda デプロイ後に、デプロイ済みシステムの状態確認・操作を行う CLI ツール。
+
+**実行方法**（venv の activate 不要）
+
+```bash
+./ops status      # または python ops.py status
+./ops invoke
+./ops logs --days 7
+```
 
 **前提条件**
 
@@ -106,26 +114,27 @@ AWS Lambda デプロイ後に、デプロイ済みシステムの状態確認・
 
 | コマンド | 説明 |
 |----------|------|
-| `python ops.py status` | Lambda モード・EventBridge（デプロイ日時・スケジュール・状態）・ポジション・直近 Z-Score を表示 |
-| `python ops.py logs [--days N] [--limit N]` | 過去 N 日間のモニタリング履歴を表示（デフォルト: 7日, 50件） |
-| `python ops.py trades [--limit N] [--all]` | トレード履歴と PnL を表示。`--all` で全件 |
-| `python ops.py invoke` | Lambda を手動で即時実行（定期実行を待たずに1回分のロジックを実行） |
-| `python ops.py stop [-y]` | ポジション状態を NO_POSITION にリセット（緊急停止）。`-y` で確認なし |
+| `./ops status` | Lambda モード・EventBridge（デプロイ日時・スケジュール・状態）・ポジション・直近 Z-Score を表示 |
+| `./ops logs [--days N] [--limit N]` | 過去 N 日間のモニタリング履歴を表示（デフォルト: 7日, 50件） |
+| `./ops trades [--limit N] [--all]` | トレード履歴と PnL を表示。`--all` で全件 |
+| `./ops invoke` | Lambda を手動で即時実行（定期実行を待たずに1回分のロジックを実行） |
+| `./ops cloudwatch [--minutes N]` | Lambda の CloudWatch Logs を表示（デバッグ用） |
+| `./ops stop [-y]` | ポジション状態を NO_POSITION にリセット（緊急停止）。`-y` で確認なし |
 
 **使用例**
 
 ```bash
 # 状態確認
-python ops.py status
+./ops status
 
 # 直近14日間のモニタリングログを20件表示
-python ops.py logs --days 14 --limit 20
+./ops logs --days 14 --limit 20
 
 # Lambda を手動実行
-python ops.py invoke
+./ops invoke
 
 # 緊急停止（確認プロンプトあり）
-python ops.py stop
+./ops stop
 ```
 
 **環境変数（オプション）**
